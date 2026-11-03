@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi05-alignbox3d"
+version = "0.1.0"
+description = "AlignBox3D data export and validation for LeRobot pi0.5"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.0",
+  "pyarrow>=17",
+  "imageio>=2.36",
+  "imageio-ffmpeg>=0.5",
+]
+
+[project.scripts]
+pi05-alignbox3d-export = "pi05_alignbox3d.export:main"
+pi05-alignbox3d-rollout = "pi05_alignbox3d.rollout:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pi05_alignbox3d*"]
