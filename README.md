@@ -8,11 +8,11 @@
 
 ## 1. 部署两个项目，设置路径
 
-在服务器上使用 Bash，**按顺序在同一个会话执行**。先把交付文件 `Pi05AlignBox3D-server-bundle.tar.gz` 上传到 `/srv/`；它含 Pi05 的七个文件及本次核对过的 ReposeEnv 源码、机器人资源和 `config/alignbox3d_data.yml`。把 `INSTALL_ROOT` 改为服务器上尚不存在的目录；`RUN_ROOT` 默认放在 Pi05 下，若 `/srv` 空间不足，执行前改成大容量磁盘上的新目录。已有原始数据时，再把 `TRAIN_RAW`、`VAL_RAW` 改成原始数据目录。**不要把当前正在训练的 ReposeEnv 目录覆盖掉。**
+在服务器上使用 Bash，**按顺序在同一个会话执行**。先把本次更新的 `Pi05AlignBox3D-server-bundle-20261104.tar.gz` 上传到 `/srv/`；旧的无日期包仍含六阶段导出器，不能用于错误抵箱恢复数据。新包含 Pi05 的七个文件及更新后的 ReposeEnv 源码、机器人资源和 `config/alignbox3d_data.yml`。把 `INSTALL_ROOT` 改为服务器上尚不存在的目录；`RUN_ROOT` 默认放在 Pi05 下，若 `/srv` 空间不足，执行前改成大容量磁盘上的新目录。已有原始数据时，再把 `TRAIN_RAW`、`VAL_RAW` 改成原始数据目录。**不要把当前正在训练的 ReposeEnv 目录覆盖掉。**
 
 ```bash
 set -euo pipefail
-BUNDLE=/srv/Pi05AlignBox3D-server-bundle.tar.gz
+BUNDLE=/srv/Pi05AlignBox3D-server-bundle-20261104.tar.gz
 INSTALL_ROOT=/srv/pi05_alignbox3d_run01
 test -f "$BUNDLE"
 test ! -e "$INSTALL_ROOT"
@@ -20,8 +20,9 @@ mkdir -p "$INSTALL_ROOT"
 tar -xzf "$BUNDLE" -C "$INSTALL_ROOT"
 REPOSE_ROOT="$INSTALL_ROOT/ReposeEnvPi05"
 PROJECT_ROOT="$INSTALL_ROOT/Pi05AlignBox3D"
-TRAIN_N=100
-VAL_N=12
+TRAIN_N=200
+VAL_N=24
+CONTACT_ERROR_FRACTION=0.20
 EVAL_N=10
 RUN_ROOT="$PROJECT_ROOT/runs/$(date +%Y%m%d-%H%M%S)"
 TRAIN_RAW="$RUN_ROOT/raw_train"
@@ -78,7 +79,7 @@ PY
 
 ## 3. 生成训练和验证原始示范
 
-默认生成 100 条训练成功示范和 12 条验证成功示范，这是**流程试跑规模**；正式规模应按算力和实验计划调整 `TRAIN_N`、`VAL_N`。已有原始目录时，在第 1 步将 `TRAIN_RAW`、`VAL_RAW` 指向它们，下面的条件判断会跳过对应采集。原始目录应有 `meta/collection.json`、`meta/data_split.json`、`meta/language.json` 和 `meta/source_snapshot/alignbox3d/env.py`。若目录存在但不完整，直接停止并报告，**不要删除或覆盖**。
+默认生成 200 条训练成功示范和 24 条验证成功示范。每侧在同一个原始目录中混合正常抓取与错误抵住箱沿后的恢复轨迹，尝试时错误恢复概率为 `CONTACT_ERROR_FRACTION=0.20`；由于只保存成功轨迹，最终比例应以采集报告为准。恢复轨迹从已测得单侧抵箱接触的状态开始，记录松开、退出、重新规划、重抓和最终对齐；制造错误的动作不进入训练。已有原始目录时，在第 1 步将 `TRAIN_RAW`、`VAL_RAW` 指向它们，下面的条件判断会跳过对应采集。原始目录应有 `meta/collection.json`、`meta/data_split.json`、`meta/language.json` 和 `meta/source_snapshot/alignbox3d/env.py`。若目录存在但不完整，直接停止并报告，**不要删除或覆盖**。
 
 ```bash
 cd "$REPOSE_ROOT"
@@ -87,6 +88,7 @@ if test -e "$TRAIN_RAW"; then
 else
   python -m alignbox3d.collect --split train --episodes "$TRAIN_N" \
     --max-attempts "$((5 * TRAIN_N))" --workers 4 --render-size 256 \
+    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" \
     --data-config "$REPOSE_ROOT/config/alignbox3d_data.yml" --output "$TRAIN_RAW"
 fi
 if test -e "$VAL_RAW"; then
@@ -94,6 +96,7 @@ if test -e "$VAL_RAW"; then
 else
   python -m alignbox3d.collect --split validation --episodes "$VAL_N" \
     --max-attempts "$((5 * VAL_N))" --workers 4 --render-size 256 \
+    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" \
     --data-config "$REPOSE_ROOT/config/alignbox3d_data.yml" --output "$VAL_RAW"
 fi
 python - "$TRAIN_RAW" "$VAL_RAW" <<'PY'
@@ -105,11 +108,13 @@ for path_text, expected in zip(sys.argv[1:], ("train", "validation")):
     split = json.loads((path / "meta/data_split.json").read_text())
     assert report["complete"] is True and report["saved_episodes"] == report["requested_episodes"]
     assert report["split"] == split["split"] == expected
-    print(expected, "saved", report["saved_episodes"], "attempts", report["attempts"], path)
+    modes = report["saved_by_recovery_stage"]
+    assert modes["none"] > 0 and modes["contact_error"] > 0, (path, modes)
+    print(expected, "saved", report["saved_episodes"], "attempts", report["attempts"], "modes", modes, path)
 PY
 ```
 
-采集时只保存成功轨迹；失败尝试及原因仍留在 `meta/collection.json`。训练和验证使用配置中互不重叠的 seed 范围。两份原始数据保留逐帧阶段文字和阶段 ID，不直接交给 π₀.₅ 训练。
+采集时只保存成功轨迹；失败尝试及原因仍留在 `meta/collection.json`。训练和验证使用配置中互不重叠的 seed 范围。两份原始数据保留逐帧阶段文字和阶段 ID，不直接交给 π₀.₅ 训练。`data.py` 导出时核对新增的第 7 阶段“重新抓取”，然后将所有阶段句子统一替换为固定的高层任务指令。正常与错误恢复轨迹必须一起训练。
 
 ## 4. 安装 LeRobot，导出并检查数据
 
@@ -137,7 +142,7 @@ python data.py check --dataset "$PI05_DATA"
 
 ## 5. 预检并训练 π₀.₅
 
-默认从 `lerobot/pi05_base` 后训练。`train.py` 在 Python 里构造 LeRobot 的 `DatasetConfig`、`PI05Config`、`TrainPipelineConfig` 并调用官方 `train(cfg)`。预检下载/核对基础权重文件与配置，并用 π₀.₅ 的 PaliGemma tokenizer 检查完整任务提示词未被 200 token 截断；**完整权重键核对发生在正式训练启动时**。首次权重下载及 10 个含训练状态的 checkpoint 都需大量磁盘空间。默认需要 CUDA 与 bfloat16；若 GPU 不支持 bfloat16，可在两个命令都加 `--dtype float32`，并先确认显存。`TRAIN_OUTPUT` 必须尚不存在；已有完整训练 checkpoint 时，跳过训练并在第 6 步设置 `CHECKPOINT`。
+默认从 `lerobot/pi05_base` 后训练。`train.py` 在 Python 里构造 LeRobot 的 `DatasetConfig`、`PI05Config`、`TrainPipelineConfig` 并调用官方 `train(cfg)`。预检下载/核对基础权重文件与配置，并用 π₀.₅ 的 PaliGemma tokenizer 检查完整任务提示词未被 200 token 截断；**完整权重键核对发生在正式训练启动时**。为尽快得到首轮结果，下面运行 3000 步、每 1000 步评估并只在末步保存 checkpoint；这不是已证明充分收敛的步数。默认需要 CUDA 与 bfloat16；若 GPU 不支持 bfloat16，可在两个命令都加 `--dtype float32`，并先确认显存。`TRAIN_OUTPUT` 必须尚不存在；已有完整训练 checkpoint 时，跳过训练并在第 6 步设置 `CHECKPOINT`。
 
 ```bash
 df -h "$RUN_ROOT"
@@ -146,13 +151,13 @@ python -c 'import torch; print("GPU:", torch.cuda.get_device_name(0), "bf16:", t
 python train.py --dataset "$PI05_DATA" --output "$TRAIN_OUTPUT" --check-only
 test ! -e "$TRAIN_OUTPUT"
 python train.py --dataset "$PI05_DATA" --output "$TRAIN_OUTPUT" \
-  --steps 20000 --batch-size 1 --num-workers 2 \
-  --eval-steps 2000 --save-freq 2000 \
+  --steps 3000 --batch-size 1 --num-workers 2 \
+  --eval-steps 1000 --save-freq 3000 \
   2>&1 | tee "$RUN_ROOT/train.log"
 grep -E 'Train/eval split:|All keys loaded successfully!|eval_loss=' "$RUN_ROOT/train.log"
 ```
 
-日志应显示 `Train/eval split: 100 train, 12 eval`（或你设置的数量）、`All keys loaded successfully!` 及每 2000 步的 `eval_loss=`。若权重键未完整加载，代码会退出。`eval_loss` 是离线动作损失，不是任务成功率。`use_relative_actions=False` 已固定在 [train.py](train.py)；不要照搬官方相对动作示例的 `true`。
+日志应显示 `Train/eval split: 200 train, 24 eval`（或你设置的数量）、`All keys loaded successfully!` 及每 1000 步的 `eval_loss=`。若权重键未完整加载，代码会退出。`eval_loss` 是离线动作损失，不是任务成功率。`use_relative_actions=False` 已固定在 [train.py](train.py)；不要照搬官方相对动作示例的 `true`。
 
 ## 6. 闭环验证并录制视频
 

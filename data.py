@@ -96,8 +96,9 @@ def _source(root: Path, split_name: str) -> dict:
             if sentence in stage_for_text and stage_for_text[sentence] != stage["id"]:
                 raise ValueError(f"{root}: a stage sentence has two IDs.")
             stage_for_text[sentence] = stage["id"]
-    if len(stages) != 6 or {stage["id"] for stage in stages} != set(range(6)) or not stage_for_text:
-        raise ValueError(f"{root}: expected six stage labels and their sentences.")
+    if (len(stages) not in (6, 7) or {stage["id"] for stage in stages} != set(range(len(stages)))
+            or not stage_for_text):
+        raise ValueError(f"{root}: expected six or seven consecutive stage labels and their sentences.")
     previous = 0
     for number, episode in enumerate(ds.meta.episodes):
         start, stop = int(episode["dataset_from_index"]), int(episode["dataset_to_index"])
