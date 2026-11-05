@@ -8,11 +8,11 @@
 
 ## 1. 部署两个项目，设置路径
 
-在服务器上使用 Bash，**按顺序在同一个会话执行**。先把本次更新的 `Pi05AlignBox3D-server-bundle-20261105.tar.gz` 上传到 `/srv/`；旧包没有四种横向抵箱错误和一致姿态抓取。新包含 Pi05 的七个文件及更新后的 ReposeEnv 源码、机器人资源和 `config/alignbox3d_data.yml`。把 `INSTALL_ROOT` 改为服务器上尚不存在的目录；`RUN_ROOT` 默认放在 Pi05 下，若 `/srv` 空间不足，执行前改成大容量磁盘上的新目录。已有原始数据时，再把 `TRAIN_RAW`、`VAL_RAW` 改成原始数据目录。**不要把当前正在训练的 ReposeEnv 目录覆盖掉。**
+在服务器上使用 Bash，**按顺序在同一个会话执行**。先把本次更新的 `Pi05AlignBox3D-server-bundle-20261105-v2.tar.gz` 上传到 `/srv/`；v2 增加两只夹爪已低于箱沿的横向偏差初态。包内包含 Pi05 的七个文件及更新后的 ReposeEnv 源码、机器人资源和 `config/alignbox3d_data.yml`。把 `INSTALL_ROOT` 改为服务器上尚不存在的目录；`RUN_ROOT` 默认放在 Pi05 下，若 `/srv` 空间不足，执行前改成大容量磁盘上的新目录。已有原始数据时，再把 `TRAIN_RAW`、`VAL_RAW` 改成原始数据目录。**不要把当前正在训练的 ReposeEnv 目录覆盖掉。**
 
 ```bash
 set -euo pipefail
-BUNDLE=/srv/Pi05AlignBox3D-server-bundle-20261105.tar.gz
+BUNDLE=/srv/Pi05AlignBox3D-server-bundle-20261105-v2.tar.gz
 INSTALL_ROOT=/srv/pi05_alignbox3d_run01
 test -f "$BUNDLE"
 test ! -e "$INSTALL_ROOT"
@@ -24,6 +24,7 @@ TRAIN_N=200
 VAL_N=24
 CONTACT_ERROR_FRACTION=0.20
 GRASP_READY_FRACTION=0.20
+LOW_OFFSET_FRACTION=0.20
 EVAL_N=10
 RUN_ROOT="$PROJECT_ROOT/runs/$(date +%Y%m%d-%H%M%S)"
 TRAIN_RAW="$RUN_ROOT/raw_train"
@@ -80,7 +81,11 @@ PY
 
 ## 3. 生成训练和验证原始示范
 
-默认生成 200 条训练成功示范和 24 条验证成功示范。在同一个原始目录中混合完整正常抓取、错误抵箱恢复和抓取就绪轨迹，尝试概率为 60%/20%/20%；由于只保存成功轨迹，最终比例以采集报告为准。恢复轨迹让两只夹爪各自偏到箱壁外侧或内侧，覆盖外/外、内/内、外/内、内/外四种组合；从已测得接触、且箱壁不在任何一只夹爪的两指之间的状态开始。抓取就绪轨迹从箱沿已在两指之间、下一步直接闭合的状态开始，近垂直和倾斜夹持方向各占约一半。预定位和制造错误的动作不进入训练。已有原始目录时，在第 1 步将 `TRAIN_RAW`、`VAL_RAW` 指向它们，下面的条件判断会跳过对应采集。原始目录应有 `meta/collection.json`、`meta/data_split.json`、`meta/language.json` 和 `meta/source_snapshot/alignbox3d/env.py`。旧数据缺少新类型，不能复用；若目录存在但不完整，直接停止并报告，**不要删除或覆盖**。
+默认生成 200 条训练成功示范和 24 条验证成功示范。在同一个原始目录中混合完整正常抓取、错误抵箱恢复、抓取就绪和低位横向纠偏轨迹，尝试概率为 40%/20%/20%/20%；由于只保存成功轨迹，最终比例以采集报告为准。
+
+错误抵箱轨迹从已测得接触、且箱壁不在任何一只夹爪的两指之间的状态开始。抓取就绪轨迹从箱沿已在两指之间、下一步直接闭合的状态开始，近垂直和倾斜夹持方向各占约一半。低位横向纠偏轨迹从两只夹爪都已低于箱沿至少 40 mm、各自向箱壁内或外偏离 25–35 mm 的状态开始；专家先竖直撤出，再重新抓取。两种横向错误轨迹都覆盖外/外、内/内、外/内、内/外四种组合。预定位和制造错误的动作不进入训练。
+
+已有原始目录时，在第 1 步将 `TRAIN_RAW`、`VAL_RAW` 指向它们，下面的条件判断会跳过对应采集。原始目录应有 `meta/collection.json`、`meta/data_split.json`、`meta/language.json` 和 `meta/source_snapshot/alignbox3d/env.py`。旧数据缺少新类型，不能复用；若目录存在但不完整，直接停止并报告，**不要删除或覆盖**。
 
 ```bash
 cd "$REPOSE_ROOT"
@@ -89,7 +94,7 @@ if test -e "$TRAIN_RAW"; then
 else
   python -m alignbox3d.collect --split train --episodes "$TRAIN_N" \
     --max-attempts "$((5 * TRAIN_N))" --workers 4 --render-size 256 \
-    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" --grasp-ready-fraction "$GRASP_READY_FRACTION" \
+    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" --grasp-ready-fraction "$GRASP_READY_FRACTION" --low-offset-fraction "$LOW_OFFSET_FRACTION" \
     --data-config "$REPOSE_ROOT/config/alignbox3d_data.yml" --output "$TRAIN_RAW"
 fi
 if test -e "$VAL_RAW"; then
@@ -97,7 +102,7 @@ if test -e "$VAL_RAW"; then
 else
   python -m alignbox3d.collect --split validation --episodes "$VAL_N" \
     --max-attempts "$((5 * VAL_N))" --workers 4 --render-size 256 \
-    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" --grasp-ready-fraction "$GRASP_READY_FRACTION" \
+    --recovery-fraction 0 --contact-error-fraction "$CONTACT_ERROR_FRACTION" --grasp-ready-fraction "$GRASP_READY_FRACTION" --low-offset-fraction "$LOW_OFFSET_FRACTION" \
     --data-config "$REPOSE_ROOT/config/alignbox3d_data.yml" --output "$VAL_RAW"
 fi
 python - "$TRAIN_RAW" "$VAL_RAW" <<'PY'
@@ -110,16 +115,17 @@ for path_text, expected in zip(sys.argv[1:], ("train", "validation")):
     assert report["complete"] is True and report["saved_episodes"] == report["requested_episodes"]
     assert report["split"] == split["split"] == expected
     modes = report["saved_by_recovery_stage"]
-    assert "grasp_ready" in modes and "saved_by_contact_pattern" in report, f"Old collector output; regenerate {path}"
+    assert "low_offset" in modes and "saved_by_contact_pattern" in report and "saved_by_low_offset_pattern" in report, f"Old collector output; regenerate {path}"
     patterns = report["saved_by_contact_pattern"]
-    assert modes["none"] > 0 and modes["contact_error"] > 0 and modes["grasp_ready"] > 0, (path, modes)
+    low_patterns = report["saved_by_low_offset_pattern"]
+    assert all(modes[name] > 0 for name in ("none", "contact_error", "grasp_ready", "low_offset")), (path, modes)
     if expected == "train":
-        assert all(patterns.values()), (path, patterns)
-    print(expected, "saved", report["saved_episodes"], "attempts", report["attempts"], "modes", modes, "patterns", patterns, path)
+        assert all(patterns.values()) and all(low_patterns.values()), (path, patterns, low_patterns)
+    print(expected, "saved", report["saved_episodes"], "attempts", report["attempts"], "modes", modes, "contact_patterns", patterns, "low_patterns", low_patterns, path)
 PY
 ```
 
-采集时只保存成功轨迹；失败尝试及原因仍留在 `meta/collection.json`。训练和验证使用配置中互不重叠的 seed 范围。两份原始数据保留逐帧阶段文字和阶段 ID，不直接交给 π₀.₅ 训练。`data.py` 导出时核对新增的第 7 阶段“重新抓取”，然后将所有阶段句子统一替换为固定的高层任务指令。完整正常、错误恢复和抓取就绪轨迹必须一起训练。
+采集时只保存成功轨迹；失败尝试及原因仍留在 `meta/collection.json`。训练和验证使用配置中互不重叠的 seed 范围。两份原始数据保留逐帧阶段文字和阶段 ID，不直接交给 π₀.₅ 训练。`data.py` 导出时核对新增的第 7 阶段“重新抓取”，然后将所有阶段句子统一替换为固定的高层任务指令。完整正常、错误抵箱恢复、抓取就绪和低位横向纠偏轨迹必须一起训练。
 
 ## 4. 安装 LeRobot，导出并检查数据
 
